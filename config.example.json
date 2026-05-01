@@ -1,0 +1,8 @@
+{
+  "screenshot-picker": {
+    "sources": [
+      "%OneDrive%\\screenshots",
+      "~/Pictures/Screenshots"
+    ]
+  }
+}
