@@ -3,7 +3,6 @@
 
 import { listFlat } from "./sources.mjs";
 import { createStage } from "./stage.mjs";
-import { buildToolResult } from "./attach.mjs";
 import { runPicker as defaultRunPicker } from "./picker-ui.mjs";
 
 export async function registerExtension({
@@ -25,23 +24,21 @@ export async function registerExtension({
   };
 
   session = await joinSession({
-    tools: [
+    commands: [
       {
         name: "ss",
         description:
-          "Open the interactive screenshot picker. Lets the user browse and " +
-          "stage recent screenshots from configured sources. Staged screenshots " +
-          "are returned as image content blocks so the model can see them.",
-        parameters: { type: "object", properties: {} },
-        handler: async () => {
+          "Open the interactive screenshot picker. Browse and stage recent " +
+          "screenshots from configured sources; staged screenshots will attach " +
+          "to your next prompt.",
+        handler: async (_ctx) => {
           const files = listFiles();
           if (files.length === 0) {
-            await log("No screenshots found in any configured source.", { level: "warning" });
-            return {
-              textResultForLlm:
-                "No screenshots were found in any configured source. " +
-                "Configure ~/.copilot/screenshot-picker.json or set COPILOT_SCREENSHOTS_DIR.",
-            };
+            await log(
+              "No screenshots found. Configure ~/.copilot/screenshot-picker.json or set COPILOT_SCREENSHOTS_DIR.",
+              { level: "warning", ephemeral: true }
+            );
+            return;
           }
 
           const selected = await runPicker(files, {
@@ -49,31 +46,23 @@ export async function registerExtension({
           });
 
           if (selected.length === 0) {
-            return { textResultForLlm: "Picker cancelled — no screenshots staged." };
+            await log("Picker cancelled — no screenshots staged.", { ephemeral: true });
+            return;
           }
 
           stage.addMany(selected);
-          await log(`Staged ${selected.length} screenshot(s).`);
-
-          const mcpResult = buildToolResult(stage.list(), {
-            warn: (msg) => log(msg, { level: "warning" }),
-          });
-
-          return {
-            textResultForLlm: mcpResult.content[0].text,
-            resultType: "success",
-            content: mcpResult.content,
-          };
+          await log(
+            `Staged ${selected.length} screenshot(s) — they will attach on your next prompt.`,
+            { ephemeral: true }
+          );
         },
       },
       {
         name: "ss_clear",
         description: "Clear all staged screenshots.",
-        parameters: { type: "object", properties: {} },
-        handler: async () => {
+        handler: async (_ctx) => {
           const n = stage.clear();
-          await log(`Cleared ${n} staged screenshot(s).`);
-          return `Cleared ${n} staged screenshot(s).`;
+          await log(`Cleared ${n} staged screenshot(s).`, { ephemeral: true });
         },
       },
     ],

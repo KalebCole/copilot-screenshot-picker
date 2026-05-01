@@ -25,15 +25,34 @@ function makeFakeSdk() {
   return { joinSession, session, get config() { return captured; } };
 }
 
-test("registers ss and ss_clear tools", async () => {
+function makeCtx(name, args = "") {
+  return {
+    sessionId: "test",
+    command: `/${name}${args ? ` ${args}` : ""}`,
+    commandName: name,
+    args,
+  };
+}
+
+test("registers ss and ss_clear as slash commands", async () => {
   const sdk = makeFakeSdk();
   await registerExtension({
     joinSession: sdk.joinSession,
     listFiles: () => [],
     runPicker: async () => [],
   });
-  const names = sdk.config.tools.map((t) => t.name).sort();
+  const names = sdk.config.commands.map((c) => c.name).sort();
   assert.deepEqual(names, ["ss", "ss_clear"]);
+});
+
+test("does not register MCP tools (commands only)", async () => {
+  const sdk = makeFakeSdk();
+  await registerExtension({
+    joinSession: sdk.joinSession,
+    listFiles: () => [],
+    runPicker: async () => [],
+  });
+  assert.equal(sdk.config.tools, undefined, "tools field must not be set");
 });
 
 test("registers onUserPromptSubmitted hook", async () => {
@@ -46,33 +65,37 @@ test("registers onUserPromptSubmitted hook", async () => {
   assert.equal(typeof sdk.config.hooks.onUserPromptSubmitted, "function");
 });
 
-test("/ss returns no-screenshots message when no files", async () => {
+test("/ss logs warning when no screenshots are configured", async () => {
   const sdk = makeFakeSdk();
   await registerExtension({
     joinSession: sdk.joinSession,
     listFiles: () => [],
-    runPicker: async () => { throw new Error("should not run picker"); },
+    runPicker: async () => { throw new Error("picker should not run"); },
   });
-  const ssTool = sdk.config.tools.find((t) => t.name === "ss");
-  const result = await ssTool.handler({}, {});
-  assert.match(result.textResultForLlm, /No screenshots/);
+  const ssCmd = sdk.config.commands.find((c) => c.name === "ss");
+  const result = await ssCmd.handler(makeCtx("ss"));
+  assert.equal(result, undefined, "command handler must return void");
+  const warn = sdk.session.logs.find((l) => /No screenshots/.test(l.msg));
+  assert.ok(warn, "expected a 'No screenshots' log");
+  assert.equal(warn.opts.level, "warning");
 });
 
-test("/ss returns cancelled message when picker returns []", async () => {
+test("/ss logs cancelled message when picker returns no selection", async () => {
   const sdk = makeFakeSdk();
   await registerExtension({
     joinSession: sdk.joinSession,
     listFiles: () => [{ path: F1, mtimeMs: Date.now(), size: 100 }],
     runPicker: async () => [],
   });
-  const ssTool = sdk.config.tools.find((t) => t.name === "ss");
-  const result = await ssTool.handler({}, {});
-  assert.match(result.textResultForLlm, /cancelled/i);
+  const ssCmd = sdk.config.commands.find((c) => c.name === "ss");
+  await ssCmd.handler(makeCtx("ss"));
+  const cancel = sdk.session.logs.find((l) => /cancelled/i.test(l.msg));
+  assert.ok(cancel, "expected a 'cancelled' log");
 });
 
-test("/ss stages selections and returns image content blocks", async () => {
+test("/ss stages selections and logs count", async () => {
   const sdk = makeFakeSdk();
-  await registerExtension({
+  const { stage } = await registerExtension({
     joinSession: sdk.joinSession,
     listFiles: () => [
       { path: F1, mtimeMs: Date.now(), size: 100 },
@@ -80,14 +103,12 @@ test("/ss stages selections and returns image content blocks", async () => {
     ],
     runPicker: async () => [F1, F2],
   });
-  const ssTool = sdk.config.tools.find((t) => t.name === "ss");
-  const result = await ssTool.handler({}, {});
-  assert.equal(result.resultType, "success");
-  assert.match(result.textResultForLlm, /Attached 2 screenshot/);
-  const imageBlocks = result.content.filter((c) => c.type === "image");
-  assert.equal(imageBlocks.length, 2);
-  assert.equal(imageBlocks[0].mimeType, "image/png");
-  assert.match(imageBlocks[0].data, /^iVBORw0KGgo/);
+  const ssCmd = sdk.config.commands.find((c) => c.name === "ss");
+  const result = await ssCmd.handler(makeCtx("ss"));
+  assert.equal(result, undefined);
+  assert.equal(stage.list().length, 2);
+  const staged = sdk.session.logs.find((l) => /Staged 2 screenshot/.test(l.msg));
+  assert.ok(staged, "expected a 'Staged 2 screenshot' log");
 });
 
 test("hook returns nothing when stage is empty", async () => {
@@ -101,34 +122,37 @@ test("hook returns nothing when stage is empty", async () => {
   assert.equal(out, undefined);
 });
 
-test("hook adds context line listing staged paths after /ss", async () => {
+test("hook adds context line listing staged paths after /ss runs", async () => {
   const sdk = makeFakeSdk();
   await registerExtension({
     joinSession: sdk.joinSession,
     listFiles: () => [{ path: F1, mtimeMs: Date.now(), size: 100 }],
     runPicker: async () => [F1],
   });
-  const ssTool = sdk.config.tools.find((t) => t.name === "ss");
-  await ssTool.handler({}, {});
+  const ssCmd = sdk.config.commands.find((c) => c.name === "ss");
+  await ssCmd.handler(makeCtx("ss"));
   const out = await sdk.config.hooks.onUserPromptSubmitted({ prompt: "hi" }, {});
   assert.ok(out);
   assert.match(out.additionalContext, /1 staged screenshot/);
   assert.match(out.additionalContext, /screenshot-1\.png/);
 });
 
-test("/ss_clear empties the stage", async () => {
+test("/ss_clear empties the stage and logs the count", async () => {
   const sdk = makeFakeSdk();
-  await registerExtension({
+  const { stage } = await registerExtension({
     joinSession: sdk.joinSession,
     listFiles: () => [{ path: F1, mtimeMs: Date.now(), size: 100 }],
     runPicker: async () => [F1],
   });
-  const ssTool = sdk.config.tools.find((t) => t.name === "ss");
-  const clearTool = sdk.config.tools.find((t) => t.name === "ss_clear");
-  await ssTool.handler({}, {});
-  const result = await clearTool.handler({}, {});
-  assert.match(String(result), /Cleared 1/);
-  // After clear, hook should return nothing
+  const ssCmd = sdk.config.commands.find((c) => c.name === "ss");
+  const clearCmd = sdk.config.commands.find((c) => c.name === "ss_clear");
+  await ssCmd.handler(makeCtx("ss"));
+  assert.equal(stage.list().length, 1);
+  await clearCmd.handler(makeCtx("ss_clear"));
+  assert.equal(stage.list().length, 0);
+  const cleared = sdk.session.logs.find((l) => /Cleared 1/.test(l.msg));
+  assert.ok(cleared, "expected a 'Cleared 1' log");
+  // After clear, hook should return nothing.
   const out = await sdk.config.hooks.onUserPromptSubmitted({ prompt: "hi" }, {});
   assert.equal(out, undefined);
 });
